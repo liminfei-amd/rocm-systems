@@ -327,6 +327,9 @@ class Command : public Event {
 
   bool packetCapturing_ = false;       //!< Flag to enable/disable graph gpu packet capture
   std::vector<uint8_t*>* gpuPackets_;  //!< GPU packets captured when graph capturing is enabled
+  //!< Metadata-prefetch packets captured alongside gpuPackets_ (graph capture).
+  //!< nullptr when the dispatch path should not capture metadata.
+  std::vector<uint8_t*>* gpuMetadataPackets_ = nullptr;
   GraphKernelArgManager* graphKernArgMgr_ = nullptr;  //!< KernelMgr for graph
   address kernArgOffset_ = nullptr;  //!< KernelArg buffer to used when graph capturing is enabled
   const std::string** capturedKernelName_ = nullptr;  //!< Kernel under capture
@@ -374,12 +377,16 @@ class Command : public Event {
   }
   bool getPktCapturingState() const { return packetCapturing_; }
 
-  //! Sets AQL capture state, aql packet to capture and where to copy kernArgs
+  //! Sets AQL capture state, aql packet to capture and where to copy kernArgs.
+  //! |metadataPacket|, when non-null, also enables capturing the metadata-prefetch
+  //! packet that parallels each captured AQL packet.
   void setPktCapturingState(bool state, std::vector<uint8_t*>* packet,
                             amd::GraphKernelArgManager* graphKernArgMgr,
-                            const std::string** capturedKernelName) {
+                            const std::string** capturedKernelName,
+                            std::vector<uint8_t*>* metadataPacket = nullptr) {
     packetCapturing_ = state;
     gpuPackets_ = packet;
+    gpuMetadataPackets_ = metadataPacket;
     graphKernArgMgr_ = graphKernArgMgr;
     capturedKernelName_ = capturedKernelName;
   }
@@ -395,6 +402,18 @@ class Command : public Event {
   const uint8_t* getAqlPacket() const {
     uint8_t* packet = new uint8_t[64];
     gpuPackets_->push_back(packet);
+    return packet;
+  }
+
+  //! Allocate and register a metadata-prefetch packet buffer for capture. Returns
+  //! nullptr when metadata capture is not enabled for this command. |size| is the
+  //! metadata packet size in bytes (e.g. sizeof(hsa_amd_metadata_*_packet_t)).
+  uint8_t* getMetadataPacket(size_t size) const {
+    if (gpuMetadataPackets_ == nullptr) {
+      return nullptr;
+    }
+    uint8_t* packet = new uint8_t[size]();
+    gpuMetadataPackets_->push_back(packet);
     return packet;
   }
 

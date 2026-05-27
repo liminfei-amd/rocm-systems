@@ -22,6 +22,7 @@
 #include "hip_platform.hpp"
 #include "hip_mempool_impl.hpp"
 #include "hip_vm.hpp"
+#include "utils/nontemporal.hpp"
 
 typedef struct ihipExtKernelEvents {
   hipEvent_t startEvent_;
@@ -239,6 +240,9 @@ class GraphNode : public hipGraphNodeDOTAttribute {
     for (auto packet : gpuPackets_) {
       delete[] packet;
     }
+    for (auto packet : gpuMetadataPackets_) {
+      delete[] packet;
+    }
     amd::ScopedLock lock(nodeSetLock_);
     nodeSet_.erase(this);
   }
@@ -253,16 +257,23 @@ class GraphNode : public hipGraphNodeDOTAttribute {
   }
   // Return gpu packet address to update with actual packet under capture.
   std::vector<uint8_t*>& GetAqlPackets() { return gpuPackets_; }
+  // Return captured metadata-prefetch packets (parallel to gpuPackets_).
+  std::vector<uint8_t*>& GetMetadataPackets() { return gpuMetadataPackets_; }
   void SetKernelName(const std::string* kernelName) { capturedKernelName_ = kernelName; }
   const std::string* GetKernelName() const { return capturedKernelName_; }
   size_t GetKerArgSize() const { return alignedKernArgSize_; }
   size_t GetKernargSegmentByteSize() const { return kernargSegmentByteSize_; }
   size_t GetKernargSegmentAlignment() const { return kernargSegmentAlignment_; }
 
-  //! Capture packets and accumulate them into a batch if provided
+  //! Capture packets and accumulate them into a batch if provided.
+  //! |batchMetadataPackets|, when provided, receives the captured metadata-prefetch
+  //! packet for each AQL packet (pointer-parallel to |batchPackets|). Entries are
+  //! nullptr for packets that produced no metadata (e.g. device has no metadata
+  //! ring buffer), so the batch's flat metadata buffer stays index-aligned.
   hipError_t CaptureAndFormPacket(GraphKernelArgManager* kernArgMgr,
                                   std::vector<uint8_t*>* batchPackets = nullptr,
-                                  std::vector<const std::string*>* batchKernelNames = nullptr) {
+                                  std::vector<const std::string*>* batchKernelNames = nullptr,
+                                  std::vector<uint8_t*>* batchMetadataPackets = nullptr) {
     auto capture_stream = hip::getNullStream(g_devices[dev_id_]->devices()[0]->context(), false);
     hipError_t status = CreateCommand(capture_stream);
     if (status != hipSuccess) {
@@ -273,20 +284,35 @@ class GraphNode : public hipGraphNodeDOTAttribute {
     std::for_each(gpuPackets_.begin(), gpuPackets_.end(), [](auto p) { delete[] p; });
     // Clear the pointer array
     gpuPackets_.clear();
+    std::for_each(gpuMetadataPackets_.begin(), gpuMetadataPackets_.end(),
+                  [](auto p) { delete[] p; });
+    gpuMetadataPackets_.clear();
 
     for (auto& command : commands_) {
-      command->setPktCapturingState(true, &gpuPackets_, kernArgMgr, &capturedKernelName_);
+      command->setPktCapturingState(true, &gpuPackets_, kernArgMgr, &capturedKernelName_,
+                                    &gpuMetadataPackets_);
       // Enqueue command to capture GPU Packet. The packet is not submitted to the device.
       // The packet is stored in gpuPacket_ and submitted during graph launch.
       command->submit(*(command->queue())->vdev());
       command->release();
     }
 
+    // The metadata capture path appends one metadata packet per AQL packet, but
+    // only on devices with a metadata ring buffer. Normalize to be pointer-parallel
+    // with gpuPackets_ so downstream flattening can rely on a 1:1 index mapping.
+    if (gpuMetadataPackets_.empty()) {
+      gpuMetadataPackets_.resize(gpuPackets_.size(), nullptr);
+    }
+
     // Accumulate packets directly into the batch (only if batch vectors are provided)
     if (batchPackets != nullptr && batchKernelNames != nullptr) {
-      for (auto& packet : gpuPackets_) {
-        batchPackets->push_back(packet);
+      for (size_t i = 0; i < gpuPackets_.size(); ++i) {
+        batchPackets->push_back(gpuPackets_[i]);
         batchKernelNames->push_back(capturedKernelName_);
+        if (batchMetadataPackets != nullptr) {
+          batchMetadataPackets->push_back(
+              i < gpuMetadataPackets_.size() ? gpuMetadataPackets_[i] : nullptr);
+        }
       }
     }
 
@@ -499,6 +525,9 @@ class GraphNode : public hipGraphNodeDOTAttribute {
   unsigned int isEnabled_;
   bool signal_is_required_ = false;   //!< This node requires a signal on the command
   std::vector<uint8_t*> gpuPackets_;  //!< GPU Packet to enqueue during graph launch
+  //!< Captured metadata-prefetch packets, parallel to gpuPackets_. Empty when the
+  //!< device has no metadata ring buffer (metadata prefetch disabled).
+  std::vector<uint8_t*> gpuMetadataPackets_;
   const std::string* capturedKernelName_ = nullptr;
   size_t alignedKernArgSize_ = 256;       //!< Aligned size required for kernel args
   size_t kernargSegmentByteSize_ = 512;   //!< Kernel arg segment byte size
@@ -1129,23 +1158,39 @@ class GraphExec : public amd::ReferenceCountedObject, public Graph {
   struct PacketBatch {
     // Size of one AQL packet
     static constexpr size_t kAqlPktSize = 64;
+    // Size of one metadata-prefetch packet (hsa_amd_metadata_*_packet_t). These
+    // are 4x64B segments and live in a separate per-queue metadata ring buffer,
+    // one metadata packet per AQL slot (gfx1250 metadata prefetch).
+    static constexpr size_t kMetadataPktSize = 256;
 
     // Main dispatch vectors - always ready for batch dispatch
     std::vector<uint8_t*> dispatchPackets;
     std::vector<const std::string*> dispatchKernelNames;
+    // Captured metadata-prefetch packets, pointer-parallel to dispatchPackets
+    // (one entry per AQL packet). An entry may be nullptr for packets without
+    // captured metadata (e.g. barrier packets inserted by BuildSyncPlan, or
+    // when the device has no metadata ring buffer); such slots are flattened as
+    // a zeroed metadata packet to keep flatMetadataData index-aligned.
+    std::vector<uint8_t*> dispatchMetadataPackets;
 
     // Cached filtered lists - built on-demand when nodes are disabled
     std::vector<uint8_t*> enabledPackets;
     std::vector<const std::string*> enabledKernelNames;
 
     // Pre-built flat packet buffer for fast bulk dispatch (all nodes enabled).
-    std::vector<uint8_t> flatPacketData;
+    // 64-byte aligned so NT copies from this buffer can use aligned SIMD loads.
+    amd::AlignedVector64<uint8_t> flatPacketData;
     std::vector<uint32_t> validPacketFullHeaders;
+    // Flat metadata buffer parallel to flatPacketData: kMetadataPktSize bytes per
+    // AQL packet, in the same order. 64-byte aligned for aligned NT copies.
+    amd::AlignedVector64<uint8_t> flatMetadataData;
 
     // Filtered flat buffer - built alongside enabledPackets when some nodes are disabled.
     // Allows the fast flat-dispatch path even in the partially-disabled case.
-    std::vector<uint8_t> filteredFlatPacketData;
+    amd::AlignedVector64<uint8_t> filteredFlatPacketData;
     std::vector<uint32_t> filteredValidPacketFullHeaders;
+    // Filtered flat metadata buffer parallel to filteredFlatPacketData.
+    amd::AlignedVector64<uint8_t> filteredFlatMetadataData;
     bool filteredCacheValid = false;
 
     // Node tracking
@@ -1172,9 +1217,14 @@ class GraphExec : public amd::ReferenceCountedObject, public Graph {
     // Append one 64-byte AQL packet to a flat buffer: copies the body, saves the
     // full_header dword, and invalidates the header. Zeroes completion_signal
     // (ApplyHwEventPatches re-patches it directly via flat_packet pointers at launch).
+    // Also appends the matching kMetadataPktSize metadata packet to flatMetadata,
+    // keeping it index-aligned with flatData. |metadata_raw| may be nullptr, in
+    // which case a zeroed metadata slot is appended.
     static void appendPacketToFlatBuffer(const uint8_t* pkt_raw,
-                                         std::vector<uint8_t>& flatData,
-                                         std::vector<uint32_t>& fullHeaders);
+                                         const uint8_t* metadata_raw,
+                                         amd::AlignedVector64<uint8_t>& flatData,
+                                         std::vector<uint32_t>& fullHeaders,
+                                         amd::AlignedVector64<uint8_t>& flatMetadata);
   };
 
   //! Structure linking packet batches to segments
