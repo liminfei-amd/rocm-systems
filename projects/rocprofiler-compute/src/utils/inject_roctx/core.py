@@ -138,8 +138,75 @@ def resolve_user_caller_location() -> str:
     return "python.dispatch:0"
 
 
-# Wire format: "<op_path>:#N@file:line/...[|<backend>]". The optional
-# "|<backend>" suffix attributes the scope to its backend.
+# Operator argument capture configuration.
+_CAPTURE_ARGS_ENV = "ROCPROFCOMPUTE_ROCTX_CAPTURE_ARGS"
+_CAPTURE_ARG_VALUES_ENV = "ROCPROFCOMPUTE_ROCTX_CAPTURE_ARG_VALUES"
+
+# Maximum length of an args blob and number of items rendered.
+MAX_ARGS_LEN = 512
+MAX_ARG_ITEMS = 32
+
+
+def _encode_args(args: str) -> str:
+    """Percent-encode ``%``, ``|``, ``;``, and newlines in an args blob."""
+    if not args:
+        return ""
+    return (
+        args
+        .replace("%", "%25")
+        .replace("|", "%7C")
+        .replace(";", "%3B")
+        .replace("\r", "%0D")
+        .replace("\n", "%0A")
+    )
+
+
+def _decode_args(encoded: str) -> str:
+    """Inverse of :func:`_encode_args`."""
+    if not encoded:
+        return ""
+    return (
+        encoded
+        .replace("%0A", "\n")
+        .replace("%0D", "\r")
+        .replace("%7C", "|")
+        .replace("%3B", ";")
+        .replace("%25", "%")
+    )
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    value = raw.strip().lower()
+    if value in ("1", "true", "yes", "on"):
+        return True
+    if value in ("", "0", "false", "no", "off"):
+        return False
+    return default
+
+
+def args_capture_enabled() -> bool:
+    """Return whether operator args are captured (default True)."""
+    return _env_flag(_CAPTURE_ARGS_ENV, True)
+
+
+def args_values_enabled() -> bool:
+    """Return whether scalar arg values are captured (default False)."""
+    return _env_flag(_CAPTURE_ARG_VALUES_ENV, False)
+
+
+def cap_args(blob: str) -> str:
+    """Truncate an args blob to MAX_ARGS_LEN characters."""
+    if len(blob) > MAX_ARGS_LEN:
+        return blob[:MAX_ARGS_LEN] + "..."
+    return blob
+
+
+# Wire format: "<op_path>:#N@file:line/...[|args=<ENC>][|<backend>]". The
+# optional "|args=<ENC>" segment carries the percent-encoded leaf-operator
+# args and precedes the optional trailing "|<backend>" suffix.
 
 
 def encode_marker_name(name: str) -> str:
@@ -149,24 +216,28 @@ def encode_marker_name(name: str) -> str:
     return name.replace("%", "%25").replace("/", "%2F")
 
 
-def compose_marker(marker: str, context: str, backend: str = "") -> str:
+def compose_marker(marker: str, context: str, backend: str = "", args: str = "") -> str:
     """Return the wire-format string for a scope nested under the current
-    marker and context stacks. Marker segments are percent-encoded.
+    marker and context stacks. Marker segments are percent-encoded. When
+    ``args`` is non-empty it is appended as ``|args=<ENC>`` before the backend
+    suffix.
     """
     marker_stack = get_marker_stack()
     context_stack = get_context_stack()
     op_path = "/".join(encode_marker_name(name) for name in [*marker_stack, marker])
     full = op_path + ":" + "/".join([*context_stack, context])
+    if args:
+        full = f"{full}|args={_encode_args(args)}"
     if backend:
         full = f"{full}|{backend}"
     return full
 
 
-def _push_scope(marker: str, context: str, backend: str = "") -> None:
+def _push_scope(marker: str, context: str, backend: str = "", args: str = "") -> None:
     marker_stack = get_marker_stack()
     context_stack = get_context_stack()
 
-    _STATE.range_push(compose_marker(marker, context, backend))
+    _STATE.range_push(compose_marker(marker, context, backend, args))
 
     marker_stack.append(marker)
     context_stack.append(context)

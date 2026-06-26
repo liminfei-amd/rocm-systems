@@ -8,6 +8,7 @@
 
 #include "leaf_context.h"
 
+#include <ATen/core/dispatch/Dispatcher.h>
 #include <ATen/record_function.h>
 #include <c10/util/ThreadLocalDebugInfo.h>
 #include <pybind11/pybind11.h>
@@ -16,7 +17,9 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cctype>
 #include <cstdint>
+#include <cstdlib>
 #include <list>
 #include <memory>
 #include <mutex>
@@ -114,6 +117,255 @@ constexpr std::size_t    CAPTURE_CAP = 4096;
 
 // The RecordFunction tier instruments PyTorch ATen operators.
 constexpr const char* kRecordFnBackend = "torch";
+
+// Maximum length of an args blob before encoding.
+constexpr std::size_t kMaxArgsLen = 512;
+
+// Maximum number of operator inputs rendered into an args blob.
+constexpr std::size_t kMaxArgItems = 32;
+
+bool env_flag(const char* name, bool default_value)
+{
+    const char* raw = std::getenv(name);
+    if (raw == nullptr)
+    {
+        return default_value;
+    }
+    std::string value(raw);
+    for (char& c : value)
+    {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    if (value == "1" || value == "true" || value == "yes" || value == "on")
+    {
+        return true;
+    }
+    if (value.empty() || value == "0" || value == "false" || value == "no" || value == "off")
+    {
+        return false;
+    }
+    return default_value;
+}
+
+// Whether operator args are captured (default on).
+bool args_capture_enabled()
+{
+    static const bool enabled = env_flag("ROCPROFCOMPUTE_ROCTX_CAPTURE_ARGS", true);
+    return enabled;
+}
+
+// Whether scalar values are recorded in addition to shapes and dtypes.
+bool args_values_enabled()
+{
+    static const bool enabled = env_flag("ROCPROFCOMPUTE_ROCTX_CAPTURE_ARG_VALUES", false);
+    return enabled;
+}
+
+// Percent-encode '%', '|', ';', and newlines in an args blob.
+std::string encode_args(const std::string& args)
+{
+    std::string out;
+    out.reserve(args.size());
+    for (char c : args)
+    {
+        switch (c)
+        {
+        case '%':
+            out += "%25";
+            break;
+        case '|':
+            out += "%7C";
+            break;
+        case ';':
+            out += "%3B";
+            break;
+        case '\r':
+            out += "%0D";
+            break;
+        case '\n':
+            out += "%0A";
+            break;
+        default:
+            out += c;
+        }
+    }
+    return out;
+}
+
+// Map a tensor scalar type to the dtype spelling used by the Python tiers
+// (e.g. Float -> float32) so the args format is consistent across tiers.
+std::string scalar_type_name(c10::ScalarType type)
+{
+    switch (type)
+    {
+    case c10::ScalarType::Float:
+        return "float32";
+    case c10::ScalarType::Double:
+        return "float64";
+    case c10::ScalarType::Half:
+        return "float16";
+    case c10::ScalarType::BFloat16:
+        return "bfloat16";
+    case c10::ScalarType::Long:
+        return "int64";
+    case c10::ScalarType::Int:
+        return "int32";
+    case c10::ScalarType::Short:
+        return "int16";
+    case c10::ScalarType::Char:
+        return "int8";
+    case c10::ScalarType::Byte:
+        return "uint8";
+    case c10::ScalarType::Bool:
+        return "bool";
+    case c10::ScalarType::ComplexFloat:
+        return "complex64";
+    case c10::ScalarType::ComplexDouble:
+        return "complex128";
+    default:
+        return c10::toString(type);
+    }
+}
+
+// Render one operator input as "dtype[d0xd1]" for tensors, scalar values when
+// value capture is enabled, or the value's type tag otherwise.
+std::string render_leaf_ivalue(const c10::IValue& iv, bool values)
+{
+    try
+    {
+        if (iv.isTensor())
+        {
+            const auto& tensor = iv.toTensor();
+            if (!tensor.defined())
+            {
+                return "None";
+            }
+            std::string dims;
+            bool        first = true;
+            for (const auto dim : tensor.sizes())
+            {
+                if (!first)
+                {
+                    dims += "x";
+                }
+                first = false;
+                dims += std::to_string(dim);
+            }
+            return scalar_type_name(tensor.scalar_type()) + "[" + dims + "]";
+        }
+        if (iv.isTensorList())
+        {
+            std::string inner;
+            bool        first = true;
+            for (const auto& tensor : iv.toTensorVector())
+            {
+                if (!first)
+                {
+                    inner += ", ";
+                }
+                first = false;
+                inner += render_leaf_ivalue(c10::IValue(tensor), values);
+            }
+            return "[" + inner + "]";
+        }
+        if (values)
+        {
+            if (iv.isInt())
+            {
+                return std::to_string(iv.toInt());
+            }
+            if (iv.isBool())
+            {
+                return iv.toBool() ? "True" : "False";
+            }
+            if (iv.isDouble())
+            {
+                return std::to_string(iv.toDouble());
+            }
+        }
+        return iv.tagKind();
+    }
+    catch (...)
+    {
+        return "?";
+    }
+}
+
+// Build the unencoded args blob for a RecordFunction leaf as
+// "(name=dtype[shape], ...)". Argument names come from the operator schema
+// when available. Returns "" when capture is disabled or args are unavailable.
+std::string build_leaf_args(const at::RecordFunction& fn)
+{
+    if (!args_capture_enabled())
+    {
+        return "";
+    }
+    std::string out;
+    try
+    {
+        std::vector<std::string> names;
+        const auto               op_name = fn.operator_name();
+        if (op_name.has_value())
+        {
+            const auto handle = c10::Dispatcher::singleton().findSchema(op_name.value());
+            if (handle.has_value())
+            {
+                for (const auto& arg : handle->schema().arguments())
+                {
+                    names.push_back(arg.name());
+                }
+            }
+        }
+
+        const bool  values = args_values_enabled();
+        const auto& inputs = fn.inputs();
+        out                = "(";
+        std::size_t count  = 0;
+        for (const auto& iv : inputs)
+        {
+            if (count >= kMaxArgItems)
+            {
+                break;
+            }
+            if (count > 0)
+            {
+                out += ", ";
+            }
+            const std::string rendered = render_leaf_ivalue(iv, values);
+            if (count < names.size() && !names[count].empty())
+            {
+                out += names[count] + "=" + rendered;
+            }
+            else
+            {
+                out += rendered;
+            }
+            ++count;
+        }
+        out += ")";
+    }
+    catch (...)
+    {
+        return "";
+    }
+    if (out.size() > kMaxArgsLen)
+    {
+        out.resize(kMaxArgsLen);
+        out += "...";
+    }
+    return out;
+}
+
+// Append "|args=<encoded>" to full when args is non-empty.
+void append_args_segment(std::string& full, const std::string& args)
+{
+    if (args.empty())
+    {
+        return;
+    }
+    full += "|args=";
+    full += encode_args(args);
+}
 
 void maybe_capture(const std::string& s)
 {
@@ -327,6 +579,8 @@ std::unique_ptr<at::ObserverContext> start_cb(const at::RecordFunction& fn)
 
         // Emit the ROCTX range last. RecordFunction ops are torch-backed.
         std::string full = build_marker_string(g_stack);
+        // The args segment precedes the backend suffix.
+        append_args_segment(full, build_leaf_args(fn));
         full += '|';
         full += kRecordFnBackend;
         roctxRangePushA(full.c_str());
@@ -394,8 +648,12 @@ void end_cb(const at::RecordFunction& /*fn*/, at::ObserverContext* obs_ctx)
 }
 
 // Main-thread USER_SCOPE push. On partial failure it rolls back and
-// rethrows. When non-empty, backend is appended to the range as "|<backend>".
-void push_user_scope(const std::string& marker, const std::string& context, const std::string& backend)
+// rethrows. When non-empty, args is appended as "|args=<encoded>" before the
+// "|<backend>" suffix.
+void push_user_scope(const std::string& marker,
+                     const std::string& context,
+                     const std::string& backend,
+                     const std::string& args = std::string(""))
 {
     bool pushed_to_stack  = false;
     bool pushed_to_guards = false;
@@ -423,6 +681,7 @@ void push_user_scope(const std::string& marker, const std::string& context, cons
         pushed_to_guards = true;
 
         std::string full = build_marker_string(g_stack);
+        append_args_segment(full, args);
         if (!backend.empty())
         {
             full += '|';
@@ -490,9 +749,14 @@ std::int64_t install()
     {
         return static_cast<std::int64_t>(existing);
     }
-    const auto handle = at::addGlobalCallback(
-        at::RecordFunctionCallback(start_cb, end_cb)
-            .scopes({at::RecordScope::FUNCTION, at::RecordScope::BACKWARD_FUNCTION}));
+    auto callback = at::RecordFunctionCallback(start_cb, end_cb)
+                        .scopes({at::RecordScope::FUNCTION, at::RecordScope::BACKWARD_FUNCTION});
+    // Request operator inputs only when args capture is enabled.
+    if (args_capture_enabled())
+    {
+        callback.needsInputs(true);
+    }
+    const auto handle = at::addGlobalCallback(callback);
     g_handle.store(handle);
     g_installed.store(true);
     return static_cast<std::int64_t>(handle);
@@ -568,6 +832,7 @@ PYBIND11_MODULE(roctx_recordfn, m)
           pybind11::arg("marker"),
           pybind11::arg("context"),
           pybind11::arg("backend") = std::string(""),
+          pybind11::arg("args")    = std::string(""),
           "Push a USER_SCOPE frame, emit a ROCTX range, publish chain into TLS DebugInfo.");
     m.def("pop_user_scope", &pop_user_scope, "Pop the most recent push_user_scope() frame on this thread.");
     m.def("dump_stats", &dump_stats, "Internal counters for tests/debugging.");

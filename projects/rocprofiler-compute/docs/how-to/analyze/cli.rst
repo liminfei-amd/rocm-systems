@@ -736,6 +736,35 @@ hierarchy (``/``-separated) and kernel stats. A consolidated CSV
 (``ml_api_trace/consolidated.csv``) is written with all operator/kernel data;
 see :ref:`torch-operator-profiling` for details.
 
+Operator argument capture
+-------------------------
+
+Leaf operators (ATen ops and Triton kernel launches) additionally record an
+``Args`` column in ``ml_api_trace/consolidated.csv`` describing the operator's
+inputs as ``(name=dtype[shape], ...)``, where each input is labelled with its
+parameter name (for example ``(self=float32[4096x4096], other=float32[4096x4096])``
+or ``(in_ptr0=float32[8], xnumel=1024)``). Capture is on by default.
+
+The capture level is controlled by the ``--ml-trace-with-params`` profile flag,
+which only takes effect alongside a tracing flag (``--torch-trace``,
+``--triton-trace``, or ``--ml-api-trace``); used on its own it is ignored with a
+warning:
+
+* ``--ml-trace-with-params off`` — do not capture operator args.
+* ``--ml-trace-with-params shapes`` — capture input shapes and dtypes
+  (default).
+* ``--ml-trace-with-params values`` — additionally capture scalar argument
+  *values*.
+
+The flag is translated into environment variables that the instrumentation
+reads at profile time; these may also be set directly on the profiled workload:
+
+* ``ROCPROFCOMPUTE_ROCTX_CAPTURE_ARGS`` — set to ``0``/``off`` to disable args
+  capture entirely (default ``1``).
+* ``ROCPROFCOMPUTE_ROCTX_CAPTURE_ARG_VALUES`` — set to ``1``/``on`` to also
+  record scalar argument *values* in addition to shapes and dtypes
+  (default ``0``).
+
 The flat **Operator summary** table below the call tree has one row per
 operator that ran at least one GPU kernel. Time cells auto-switch between
 milliseconds and microseconds per cell; missing values render as ``N/A``.

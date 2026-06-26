@@ -203,6 +203,41 @@ TEST(MarkerEncoding, RoundTripsThroughBuildCallTreesDecode)
     EXPECT_EQ(decoded, names);
 }
 
+TEST(ArgsEncoding, EscapesPipePercentAndNewlines)
+{
+    // Reserved delimiters and newlines are percent-encoded.
+    EXPECT_EQ(encode_args("a|b"), "a%7Cb");
+    EXPECT_EQ(encode_args("100%"), "100%25");
+    EXPECT_EQ(encode_args("a;b"), "a%3Bb");
+    EXPECT_EQ(encode_args("x\ny\rz"), "x%0Ay%0Dz");
+    EXPECT_EQ(encode_args(""), "");
+    EXPECT_EQ(encode_args("(self=float32[2x2]);x"), "(self=float32[2x2])%3Bx");
+}
+
+TEST(ArgsEncoding, AppendArgsSegmentPlacesEncodedBlobBeforeBackend)
+{
+    std::string full = "op:#1@x:1";
+    append_args_segment(full, "a|b");
+    full += "|torch";
+    // The encoded args sit between the marker and the trailing backend suffix.
+    EXPECT_EQ(full, "op:#1@x:1|args=a%7Cb|torch");
+
+    std::string empty_args = "op:#1@x:1";
+    append_args_segment(empty_args, "");
+    EXPECT_EQ(empty_args, "op:#1@x:1");
+}
+
+TEST_F(RoctxRecordFnTest, PushUserScopeEmitsArgsSegmentBeforeBackend)
+{
+    start_capture();
+    push_user_scope("op", "#1@x:1", "torch", "(f32[2x2])");
+    pop_user_scope();
+    const std::vector<std::string> captured = stop_capture();
+
+    ASSERT_EQ(captured.size(), 1u);
+    EXPECT_EQ(captured[0], "op:#1@x:1|args=(f32[2x2])|torch");
+}
+
 TEST_F(RoctxRecordFnTest, SaveThenConsumeReturnsSavedStack)
 {
     const std::vector<StackEntry> stack = {{"A", "a"}, {"B", "b"}};
@@ -476,13 +511,14 @@ TEST_F(RoctxRecordFnRealOpsTest, CaptureLeafLabelsAndUserScope)
     const auto captured = stop_capture();
     ASSERT_FALSE(captured.empty());
 
-    bool        saw_aten_top      = false;
-    bool        saw_aten_nested   = false;
-    bool        saw_bwd_leaf      = false;
-    bool        saw_legacy        = false;
-    bool        saw_torch_backend = false;
-    std::size_t bwd_total         = 0;
-    std::size_t bwd_under_scope   = 0;
+    bool        saw_aten_top           = false;
+    bool        saw_aten_nested        = false;
+    bool        saw_bwd_leaf           = false;
+    bool        saw_legacy             = false;
+    bool        saw_torch_backend      = false;
+    bool        saw_labeled_tensor_arg = false;
+    std::size_t bwd_total              = 0;
+    std::size_t bwd_under_scope        = 0;
 
     const std::string backend_suffix = "|torch";
 
@@ -507,6 +543,13 @@ TEST_F(RoctxRecordFnRealOpsTest, CaptureLeafLabelsAndUserScope)
             saw_torch_backend = true;
         }
 
+        // Leaf args render as "(name=dtype[dims], ...)"; a labelled float
+        // tensor confirms schema names and dtype/shape capture end to end.
+        if (m.find("|args=(") != std::string::npos && m.find("=float32[") != std::string::npos)
+        {
+            saw_labeled_tensor_arg = true;
+        }
+
         if (m.find("autograd.bwd:0") != std::string::npos ||
             m.find("autograd.engine:0") != std::string::npos)
         {
@@ -524,6 +567,7 @@ TEST_F(RoctxRecordFnRealOpsTest, CaptureLeafLabelsAndUserScope)
     EXPECT_TRUE(saw_aten_nested);
     EXPECT_TRUE(saw_bwd_leaf);
     EXPECT_TRUE(saw_torch_backend);
+    EXPECT_TRUE(saw_labeled_tensor_arg);
     ASSERT_GT(bwd_total, 0u);
     EXPECT_GT(bwd_under_scope, 0u);
     EXPECT_GT(g_n_userscope_inherits.load(), 0u);

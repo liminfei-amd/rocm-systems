@@ -4,11 +4,14 @@
 """Internal entry point used by rocprof-compute to launch a workload under
 ROCTX injection.
 
-Invoked by absolute path as ``python <path>/launch.py --frameworks <names> --
-<target.py> [args...]``. Backends are given as a comma-separated list; when
-omitted the workload runs uninstrumented.
+Invoked by absolute path as ``python <path>/launch.py --frameworks <names>
+[--capture-args <0|1>] [--capture-arg-values <0|1>] -- <target.py> [args...]``.
+Backends are given as a comma-separated list; when omitted the workload runs
+uninstrumented. The capture options, when present, are translated into the
+inject_roctx args-capture env vars before any wraps are installed.
 """
 
+import os
 import runpy
 import sys
 from pathlib import Path
@@ -18,7 +21,11 @@ _PACKAGE_PARENT = str(Path(__file__).resolve().parents[2])
 if _PACKAGE_PARENT not in sys.path:
     sys.path.insert(0, _PACKAGE_PARENT)
 
-from utils.inject_roctx.core import install_global_wraps  # noqa: E402
+from utils.inject_roctx.core import (  # noqa: E402
+    _CAPTURE_ARG_VALUES_ENV,
+    _CAPTURE_ARGS_ENV,
+    install_global_wraps,
+)
 
 
 def _report_recordfn_callback_errors() -> None:
@@ -42,18 +49,28 @@ def _report_recordfn_callback_errors() -> None:
     )
 
 
-# Consume a leading "--frameworks <names>" option and an optional "--" separator.
+# Consume leading "--frameworks/--capture-args/--capture-arg-values <value>"
+# options and an optional "--" separator.
 args = sys.argv[1:]
 frameworks = ""
-if args and args[0] == "--frameworks":
-    frameworks = args[1] if len(args) > 1 else ""
+_LAUNCHER_OPTIONS = ("--frameworks", "--capture-args", "--capture-arg-values")
+while args and args[0] in _LAUNCHER_OPTIONS:
+    option = args[0]
+    value = args[1] if len(args) > 1 else ""
+    if option == "--frameworks":
+        frameworks = value
+    elif option == "--capture-args":
+        os.environ[_CAPTURE_ARGS_ENV] = value
+    else:
+        os.environ[_CAPTURE_ARG_VALUES_ENV] = value
     args = args[2:]
 if args and args[0] == "--":
     args = args[1:]
 
 if not args:
     print(
-        "usage: python <path>/launch.py [--frameworks <names>] -- "
+        "usage: python <path>/launch.py [--frameworks <names>] "
+        "[--capture-args <0|1>] [--capture-arg-values <0|1>] -- "
         "<target.py> [args...]",
         file=sys.stderr,
     )

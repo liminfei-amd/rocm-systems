@@ -7,6 +7,7 @@ from pathlib import Path
 
 import common
 import pandas as pd
+import pytest
 
 from utils.rocpd_data import (
     COUNTERS_COLLECTION_QUERY,
@@ -18,7 +19,11 @@ from utils.utils_analysis import (
     process_ml_api_trace_output,
     write_ml_api_trace_consolidated_csv,
 )
-from utils.utils_profile import _augment_marker_csv, _parse_function_backend
+from utils.utils_profile import (
+    _augment_marker_csv,
+    _parse_function_backend,
+    _parse_function_fields,
+)
 
 GUID = "abc-1234-def"
 
@@ -465,6 +470,71 @@ def test_parse_function_backend_edge_cases():
     assert _parse_function_backend("op|bogus") == ("op|bogus", "unknown")
     assert _parse_function_backend("") == ("", "unknown")
     assert _parse_function_backend(None) == ("", "unknown")
+
+
+@pytest.mark.parametrize(
+    "raw, expect_function, expect_backend, expect_args",
+    [
+        ("aten::add", "aten::add", "unknown", ""),
+        ("aten::mm|torch", "aten::mm", "torch", ""),
+        (
+            "aten::mm:#1@m.py:7|args=(f32[2x2])|torch",
+            "aten::mm:#1@m.py:7",
+            "torch",
+            "(f32[2x2])",
+        ),
+        (
+            "triton.k:#1@m.py:7|args=(x_ptr=f32[8], n=1024)|triton",
+            "triton.k:#1@m.py:7",
+            "triton",
+            "(x_ptr=f32[8], n=1024)",
+        ),
+        (
+            "aten::cat:#1@m.py:7|args=a%7Cb|torch",
+            "aten::cat:#1@m.py:7",
+            "torch",
+            "a|b",
+        ),
+        (
+            "aten::mm:#1@m.py:7|args=(self=f32[2x2])%3Bextra|torch",
+            "aten::mm:#1@m.py:7",
+            "torch",
+            "(self=f32[2x2]);extra",
+        ),
+    ],
+)
+def test_parse_function_fields_splits_args(
+    raw, expect_function, expect_backend, expect_args
+):
+    """The args segment is split out and decoded; backend stays parseable."""
+    fn, backend, args = _parse_function_fields(raw)
+    assert fn == expect_function
+    assert backend == expect_backend
+    assert args == expect_args
+
+
+def test_augment_marker_csv_splits_args_into_dedicated_column(tmp_path):
+    """The wire args segment is moved into a dedicated Args column."""
+    src = tmp_path / "src_marker_api_trace.csv"
+    dst = tmp_path / "ml_api_trace_dst_marker_api_trace.csv"
+    pd.DataFrame({
+        "Function": [
+            "aten::mm:#1@m.py:7|args=(f32[2x2])|torch",
+            "aten::relu:#2@m.py:8|torch",
+        ],
+        "Start": [1, 2],
+    }).to_csv(src, index=False)
+
+    _augment_marker_csv(str(src), str(dst))
+
+    out_df = pd.read_csv(dst, keep_default_na=False)
+    assert "Args" in out_df.columns
+    assert out_df["Function"].tolist() == [
+        "aten::mm:#1@m.py:7",
+        "aten::relu:#2@m.py:8",
+    ]
+    assert out_df["Args"].tolist() == ["(f32[2x2])", ""]
+    assert out_df["Backend"].tolist() == ["torch", "torch"]
 
 
 def test_augment_marker_csv_untagged_row_warns(tmp_path, monkeypatch):

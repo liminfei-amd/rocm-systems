@@ -34,9 +34,9 @@ class _RecordFnHook:
     def active(self) -> bool:
         return _STATE.using_c_tier and _STATE.roctx_recordfn is not None
 
-    def push(self, marker: str, context: str, backend: str) -> bool:
+    def push(self, marker: str, context: str, backend: str, args: str = "") -> bool:
         try:
-            _STATE.roctx_recordfn.push_user_scope(marker, context, backend)
+            _STATE.roctx_recordfn.push_user_scope(marker, context, backend, args)
             return True
         except Exception:
             return False
@@ -148,9 +148,10 @@ def _get_tier_stack() -> list[bool]:
     return _thread_local.tier_stack
 
 
-def _push_scope(marker: str, context: str, backend: str = "") -> None:
+def _push_scope(marker: str, context: str, backend: str = "", args: str = "") -> None:
     """Push a scope, routing through the native C++ RecordFunction tier when
-    active and otherwise emitting on the Python tier.
+    active and otherwise emitting on the Python tier. When non-empty, ``args``
+    is recorded as the ``|args=<ENC>`` segment of the wire string.
     """
     marker_stack = core.get_marker_stack()
     context_stack = core.get_context_stack()
@@ -160,12 +161,12 @@ def _push_scope(marker: str, context: str, backend: str = "") -> None:
     hook = _STATE.native_hook
     if hook is not None and hook.active():
         try:
-            used_native = bool(hook.push(marker, context, backend))
+            used_native = bool(hook.push(marker, context, backend, args))
         except Exception:
             used_native = False
 
     if not used_native:
-        full = core.compose_marker(marker, context, backend)
+        full = core.compose_marker(marker, context, backend, args)
         range_push, _ = core.get_python_tier_io()
         range_push(full)
 
@@ -205,10 +206,12 @@ def roctx_wrapper(
     func: Callable[..., Any],
     name: Optional[str] = None,
     backend: str = "",
+    args: str = "",
 ) -> Callable[..., Any]:
     """Wrap func so each call emits a ROCTX range. Idempotent.
 
-    A non-empty backend attributes the scope to that backend.
+    A non-empty backend attributes the scope to that backend. ``args`` is
+    recorded on each call.
     """
     if getattr(func, "_roctx_wrapped", False):
         return func
@@ -216,12 +219,17 @@ def roctx_wrapper(
     call_counter = {"count": 0}
 
     @wraps(func)
-    def wrapper(*args: Any, **kwargs: Any) -> object:
+    def wrapper(*call_args: Any, **call_kwargs: Any) -> object:
         call_counter["count"] += 1
         location = core.resolve_user_caller_location()
-        _push_scope(func_name, f"#{call_counter['count']}@{location}", backend=backend)
+        _push_scope(
+            func_name,
+            f"#{call_counter['count']}@{location}",
+            backend=backend,
+            args=args,
+        )
         try:
-            return func(*args, **kwargs)
+            return func(*call_args, **call_kwargs)
         finally:
             _pop_scope()
 
@@ -229,7 +237,9 @@ def roctx_wrapper(
     return wrapper
 
 
-def _marker_only_init_wrapper(name: str, backend: str = "") -> Callable[..., Any]:
+def _marker_only_init_wrapper(
+    name: str, backend: str = "", args: str = ""
+) -> Callable[..., Any]:
     """Build an __init__ that emits a ROCTX range, then calls object.__init__.
 
     Used for classes whose construction occurs in __new__ (e.g. cuda.Event,
@@ -237,10 +247,15 @@ def _marker_only_init_wrapper(name: str, backend: str = "") -> Callable[..., Any
     """
     call_counter = {"count": 0}
 
-    def marker_only_init(self: object, *args: Any, **kwargs: Any) -> None:
+    def marker_only_init(self: object, *call_args: Any, **call_kwargs: Any) -> None:
         call_counter["count"] += 1
         location = core.resolve_user_caller_location()
-        _push_scope(name, f"#{call_counter['count']}@{location}", backend=backend)
+        _push_scope(
+            name,
+            f"#{call_counter['count']}@{location}",
+            backend=backend,
+            args=args,
+        )
         try:
             return object.__init__(self)
         finally:
@@ -630,6 +645,65 @@ def dispatcher_marker_name_for(func: Callable[..., Any]) -> str:
     return raw
 
 
+def _format_dispatch_arg(obj: object) -> str:
+    """Render one dispatch arg as ``dtype[d0xd1]`` for tensors, else a type
+    name (or its value when value capture is enabled)."""
+    torch_mod = _STATE.torch
+    if torch_mod is not None and isinstance(obj, torch_mod.Tensor):
+        try:
+            dims = "x".join(str(int(d)) for d in obj.shape)
+        except Exception:
+            dims = "?"
+        dtype = str(obj.dtype).replace("torch.", "")
+        return f"{dtype}[{dims}]"
+    if isinstance(obj, (list, tuple)):
+        inner = ", ".join(_format_dispatch_arg(o) for o in obj[:8])
+        return f"[{inner}]"
+    if core.args_values_enabled():
+        if isinstance(obj, bool) or isinstance(obj, (int, float)):
+            return repr(obj)
+        if isinstance(obj, str):
+            return repr(obj[:32])
+    return type(obj).__name__
+
+
+def _schema_arg_names(func: Callable[..., Any]) -> Optional[list[str]]:
+    """Return ordered ATen argument names from the op schema, or None."""
+    try:
+        schema = getattr(func, "_schema", None)
+        if schema is not None:
+            return [arg.name for arg in schema.arguments]
+    except Exception:
+        pass
+    return None
+
+
+def _build_dispatch_args(
+    func: Callable[..., Any],
+    call_args: tuple[object, ...],
+    call_kwargs: dict[str, object],
+) -> str:
+    """Build the unencoded leaf-args blob for a TorchDispatchMode op.
+
+    Positional args are labelled with ATen schema parameter names when
+    available.
+    """
+    if not core.args_capture_enabled():
+        return ""
+    try:
+        names = _schema_arg_names(func)
+        parts: list[str] = []
+        for i, value in enumerate(call_args[: core.MAX_ARG_ITEMS]):
+            label = names[i] if names and i < len(names) and names[i] else None
+            rendered = _format_dispatch_arg(value)
+            parts.append(f"{label}={rendered}" if label else rendered)
+        for key, value in list(call_kwargs.items())[: core.MAX_ARG_ITEMS]:
+            parts.append(f"{key}={_format_dispatch_arg(value)}")
+        return core.cap_args("(" + ", ".join(parts) + ")")
+    except Exception:
+        return ""
+
+
 def install_dispatcher_hook() -> str:
     """C++ tier: no-op. Python tier: enter TorchDispatchMode on this thread."""
     if _STATE.using_c_tier:
@@ -649,13 +723,13 @@ def install_dispatcher_hook() -> str:
         )
         return "none"
 
-    def start_disp(op_name: str) -> None:
+    def start_disp(op_name: str, op_args: str = "") -> None:
         idx = next_dispatcher_index(op_name)
         location = core.resolve_user_caller_location()
         marker_stack = core.get_marker_stack()
         context_stack = core.get_context_stack()
         context = f"#{idx}@{location}"
-        rangePush(core.compose_marker(op_name, context, _BACKEND_NAME))
+        rangePush(core.compose_marker(op_name, context, _BACKEND_NAME, op_args))
         marker_stack.append(op_name)
         context_stack.append(context)
 
@@ -680,9 +754,10 @@ def install_dispatcher_hook() -> str:
         ) -> object:
             kwargs = kwargs or {}
             op_name = dispatcher_marker_name_for(func)
+            op_args = _build_dispatch_args(func, args, kwargs)
             pushed = False
             try:
-                start_disp(op_name)
+                start_disp(op_name, op_args)
                 pushed = True
             except Exception as exc:
                 warn_dispatcher_failure_once("start", exc)
