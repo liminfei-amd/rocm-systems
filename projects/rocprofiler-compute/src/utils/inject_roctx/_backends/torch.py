@@ -23,7 +23,7 @@ from functools import wraps
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from utils.inject_roctx import core
+from utils.inject_roctx import core, marker_format
 from utils.inject_roctx.registry import register
 from utils.logger import console_log, console_warning
 
@@ -693,13 +693,13 @@ def _build_dispatch_args(
     try:
         names = _schema_arg_names(func)
         parts: list[str] = []
-        for i, value in enumerate(call_args[: core.MAX_ARG_ITEMS]):
+        for i, value in enumerate(call_args[: marker_format.MAX_ARG_ITEMS]):
             label = names[i] if names and i < len(names) and names[i] else None
             rendered = _format_dispatch_arg(value)
             parts.append(f"{label}={rendered}" if label else rendered)
-        for key, value in list(call_kwargs.items())[: core.MAX_ARG_ITEMS]:
+        for key, value in list(call_kwargs.items())[: marker_format.MAX_ARG_ITEMS]:
             parts.append(f"{key}={_format_dispatch_arg(value)}")
-        return core.cap_args("(" + ", ".join(parts) + ")")
+        return marker_format.cap_args("(" + ", ".join(parts) + ")")
     except Exception:
         return ""
 

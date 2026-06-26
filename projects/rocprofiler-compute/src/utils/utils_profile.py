@@ -16,7 +16,7 @@ import config
 import utils.utils_profile_csv as csv_ops
 from utils import rocpd_data
 from utils.inject_roctx.constants import KNOWN_BACKENDS
-from utils.inject_roctx.core import _decode_args
+from utils.inject_roctx.marker_format import decode_args
 from utils.logger import (
     console_debug,
     console_error,
@@ -776,7 +776,7 @@ def _parse_function_fields(
     args = ""
     args_match = _ARGS_SEGMENT_RE.search(raw)
     if args_match is not None:
-        args = _decode_args(args_match.group(1))
+        args = decode_args(args_match.group(1))
         raw = raw[: args_match.start()]
     return raw, backend, args
 

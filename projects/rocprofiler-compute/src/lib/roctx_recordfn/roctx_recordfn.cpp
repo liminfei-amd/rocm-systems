@@ -118,7 +118,8 @@ constexpr std::size_t    CAPTURE_CAP = 4096;
 // The RecordFunction tier instruments PyTorch ATen operators.
 constexpr const char* kRecordFnBackend = "torch";
 
-// Maximum length of an args blob before encoding.
+// Characters kept from an args blob before encoding; longer blobs are
+// truncated to this length and an ellipsis is appended.
 constexpr std::size_t kMaxArgsLen = 512;
 
 // Maximum number of operator inputs rendered into an args blob.
