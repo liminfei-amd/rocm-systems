@@ -920,6 +920,7 @@ class Graph {
  private:
   friend class GraphExecBase;
   friend class GraphExecSegmented;
+  friend class GraphExecClassic;
   std::vector<Node> vertices_;
   const Graph* pOriginalGraph_ = nullptr;
   //!< graphUserObj_.second stores refcount owned by this graph for user object,

@@ -1230,11 +1230,30 @@ hipError_t GraphExecClassic::Run(hip::Stream* launch_stream) {
     this->retain();
   }
 
+  Node firstNode = topoOrder_.empty() ? nullptr : topoOrder_[0];
+
+  if (flags_ & hipGraphInstantiateFlagAutoFreeOnLaunch) {
+    if (firstNode != nullptr) {
+      auto* parentGraph = firstNode->GetParentGraph();
+      auto* pool = parentGraph->Device()->GetGraphMemoryPool();
+      for (auto* node : topoOrder_) {
+        if (node->GetType() == hipGraphNodeTypeMemAlloc) {
+          static_cast<GraphMemAllocNode*>(node)->ReleaseCachedMapping(pool, launch_stream);
+        }
+      }
+      parentGraph->FreeAllMemory(launch_stream);
+      parentGraph->memalloc_nodes_ = 0;
+      if (!AMD_DIRECT_DISPATCH) {
+        launch_stream->finish();
+      }
+    }
+  }
+
   if (repeatLaunch_ == false) {
     repeatLaunch_ = true;
   } else {
     // Check for MemAlloc/MemFree mismatch on repeat launches.
-    if (!topoOrder_.empty() && topoOrder_[0]->GetParentGraph()->GetMemAllocNodeCount() > 0) {
+    if (firstNode != nullptr && firstNode->GetParentGraph()->GetMemAllocNodeCount() > 0) {
       this->release();
       return hipErrorInvalidValue;
     }
