@@ -753,17 +753,8 @@ warning:
 * ``--ml-trace-with-params off`` — do not capture operator args.
 * ``--ml-trace-with-params shapes`` — capture input shapes and dtypes
   (default).
-* ``--ml-trace-with-params values`` — additionally capture scalar argument
-  *values*.
-
-The flag is translated into environment variables that the instrumentation
-reads at profile time; these may also be set directly on the profiled workload:
-
-* ``ROCPROFCOMPUTE_ROCTX_CAPTURE_ARGS`` — set to ``0``/``off`` to disable args
-  capture entirely (default ``1``).
-* ``ROCPROFCOMPUTE_ROCTX_CAPTURE_ARG_VALUES`` — set to ``1``/``on`` to also
-  record scalar argument *values* in addition to shapes and dtypes
-  (default ``0``).
+* ``--ml-trace-with-params values`` — capture scalar argument *values* in
+  addition to shapes and dtypes.
 
 The flat **Operator summary** table below the call tree has one row per
 operator that ran at least one GPU kernel. Time cells auto-switch between

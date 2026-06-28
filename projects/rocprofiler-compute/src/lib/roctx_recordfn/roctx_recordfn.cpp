@@ -17,9 +17,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
-#include <cctype>
 #include <cstdint>
-#include <cstdlib>
 #include <list>
 #include <memory>
 #include <mutex>
@@ -99,6 +97,10 @@ std::atomic<at::CallbackHandle> g_handle{at::INVALID_CALLBACK_HANDLE};
 std::atomic<bool>               g_installed{false};
 std::mutex                      g_install_mu;
 
+// Operator-argument capture configuration, set by install().
+std::atomic<bool> g_capture_args{true};
+std::atomic<bool> g_capture_arg_values{false};
+
 std::atomic<std::uint64_t> g_n_pushes{0};
 std::atomic<std::uint64_t> g_n_pops{0};
 std::atomic<std::uint64_t> g_n_snapshots_saved{0};
@@ -125,41 +127,17 @@ constexpr std::size_t kMaxArgsLen = 512;
 // Maximum number of operator inputs rendered into an args blob.
 constexpr std::size_t kMaxArgItems = 32;
 
-bool env_flag(const char* name, bool default_value)
-{
-    const char* raw = std::getenv(name);
-    if (raw == nullptr)
-    {
-        return default_value;
-    }
-    std::string value(raw);
-    for (char& c : value)
-    {
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    }
-    if (value == "1" || value == "true" || value == "yes" || value == "on")
-    {
-        return true;
-    }
-    if (value.empty() || value == "0" || value == "false" || value == "no" || value == "off")
-    {
-        return false;
-    }
-    return default_value;
-}
-
 // Whether operator args are captured (default on).
 bool args_capture_enabled()
 {
-    static const bool enabled = env_flag("ROCPROFCOMPUTE_ROCTX_CAPTURE_ARGS", true);
-    return enabled;
+    return g_capture_args.load();
 }
 
-// Whether scalar values are recorded in addition to shapes and dtypes.
+// Whether scalar values are recorded in addition to shapes and dtypes. Values
+// are only recorded when args capture is also enabled.
 bool args_values_enabled()
 {
-    static const bool enabled = env_flag("ROCPROFCOMPUTE_ROCTX_CAPTURE_ARG_VALUES", false);
-    return enabled;
+    return g_capture_args.load() && g_capture_arg_values.load();
 }
 
 // Percent-encode '%', '|', ';', and newlines in an args blob.
@@ -742,10 +720,12 @@ void pop_user_scope()
     }
 }
 
-std::int64_t install()
+std::int64_t install(bool capture_args = true, bool capture_values = false)
 {
     std::lock_guard<std::mutex> lock(g_install_mu);
-    const auto                  existing = g_handle.load();
+    g_capture_args.store(capture_args);
+    g_capture_arg_values.store(capture_values);
+    const auto existing = g_handle.load();
     if (existing != at::INVALID_CALLBACK_HANDLE)
     {
         return static_cast<std::int64_t>(existing);
@@ -753,7 +733,7 @@ std::int64_t install()
     auto callback = at::RecordFunctionCallback(start_cb, end_cb)
                         .scopes({at::RecordScope::FUNCTION, at::RecordScope::BACKWARD_FUNCTION});
     // Request operator inputs only when args capture is enabled.
-    if (args_capture_enabled())
+    if (capture_args)
     {
         callback.needsInputs(true);
     }
@@ -825,7 +805,11 @@ PYBIND11_MODULE(roctx_recordfn, m)
 {
     m.doc() = "ROCTX bridge for PyTorch's RecordFunction callback.";
 
-    m.def("install", &install, "Install the global RecordFunction callback. Idempotent.");
+    m.def("install",
+          &install,
+          "Install the global RecordFunction callback. Idempotent.",
+          pybind11::arg("capture_args")   = true,
+          pybind11::arg("capture_values") = false);
     m.def("uninstall", &uninstall, "Remove the registered callback.");
     m.def("is_installed", &is_installed, "Return True if the callback is installed.");
     m.def("push_user_scope",

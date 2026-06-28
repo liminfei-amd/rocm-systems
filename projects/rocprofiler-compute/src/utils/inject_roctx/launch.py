@@ -7,11 +7,9 @@ ROCTX injection.
 Invoked by absolute path as ``python <path>/launch.py --frameworks <names>
 [--capture-args <0|1>] [--capture-arg-values <0|1>] -- <target.py> [args...]``.
 Backends are given as a comma-separated list; when omitted the workload runs
-uninstrumented. The capture options, when present, are translated into the
-inject_roctx args-capture env vars before any wraps are installed.
+uninstrumented. The capture options configure operator-argument capture.
 """
 
-import os
 import runpy
 import sys
 from pathlib import Path
@@ -21,11 +19,7 @@ _PACKAGE_PARENT = str(Path(__file__).resolve().parents[2])
 if _PACKAGE_PARENT not in sys.path:
     sys.path.insert(0, _PACKAGE_PARENT)
 
-from utils.inject_roctx.core import (  # noqa: E402
-    _CAPTURE_ARG_VALUES_ENV,
-    _CAPTURE_ARGS_ENV,
-    install_global_wraps,
-)
+from utils.inject_roctx.core import install_global_wraps  # noqa: E402
 
 
 def _report_recordfn_callback_errors() -> None:
@@ -53,16 +47,24 @@ def _report_recordfn_callback_errors() -> None:
 # options and an optional "--" separator.
 args = sys.argv[1:]
 frameworks = ""
+capture_args = True
+capture_arg_values = False
 _LAUNCHER_OPTIONS = ("--frameworks", "--capture-args", "--capture-arg-values")
+
+
+def _flag(value: str) -> bool:
+    return value.strip().lower() in ("1", "true", "yes", "on")
+
+
 while args and args[0] in _LAUNCHER_OPTIONS:
     option = args[0]
     value = args[1] if len(args) > 1 else ""
     if option == "--frameworks":
         frameworks = value
     elif option == "--capture-args":
-        os.environ[_CAPTURE_ARGS_ENV] = value
+        capture_args = _flag(value)
     else:
-        os.environ[_CAPTURE_ARG_VALUES_ENV] = value
+        capture_arg_values = _flag(value)
     args = args[2:]
 if args and args[0] == "--":
     args = args[1:]
@@ -79,7 +81,11 @@ if not args:
 target_script = args[0]
 script_args = args[1:]
 
-install_global_wraps(frameworks)
+install_global_wraps(
+    frameworks,
+    capture_args=capture_args,
+    capture_arg_values=capture_arg_values,
+)
 
 sys.argv = [target_script] + script_args
 # Execute the workload as the top-level program (__name__ == "__main__").

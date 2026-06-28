@@ -43,6 +43,8 @@ class _CoreState:
         self.range_pop: Callable[[], None] = _missing_range_pop
         self.framework_roots: list[str] = []
         self.roctx_candidate_paths: list[str] = []
+        self.capture_args: bool = True
+        self.capture_arg_values: bool = False
 
 
 _STATE = _CoreState()
@@ -140,31 +142,25 @@ def resolve_user_caller_location() -> str:
     return "python.dispatch:0"
 
 
-# Operator argument capture configuration.
-_CAPTURE_ARGS_ENV = "ROCPROFCOMPUTE_ROCTX_CAPTURE_ARGS"
-_CAPTURE_ARG_VALUES_ENV = "ROCPROFCOMPUTE_ROCTX_CAPTURE_ARG_VALUES"
+# Operator-argument capture configuration.
 
 
-def _env_flag(name: str, default: bool) -> bool:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    value = raw.strip().lower()
-    if value in ("1", "true", "yes", "on"):
-        return True
-    if value in ("", "0", "false", "no", "off"):
-        return False
-    return default
+def set_args_capture(capture_args: bool, capture_arg_values: bool) -> None:
+    """Configure operator-argument capture. Scalar values are recorded only
+    when both ``capture_args`` and ``capture_arg_values`` are True.
+    """
+    _STATE.capture_args = bool(capture_args)
+    _STATE.capture_arg_values = bool(capture_arg_values)
 
 
 def args_capture_enabled() -> bool:
     """Return whether operator args are captured (default True)."""
-    return _env_flag(_CAPTURE_ARGS_ENV, True)
+    return _STATE.capture_args
 
 
 def args_values_enabled() -> bool:
     """Return whether scalar arg values are captured (default False)."""
-    return _env_flag(_CAPTURE_ARG_VALUES_ENV, False)
+    return _STATE.capture_args and _STATE.capture_arg_values
 
 
 # Wire format: "<op_path>:#N@file:line/...[|args=<ENC>][|<backend>]". The
@@ -223,10 +219,15 @@ def _pop_scope() -> None:
             context_stack.pop()
 
 
-def install_global_wraps(backends: Union[str, Iterable[str]] = "") -> None:
+def install_global_wraps(
+    backends: Union[str, Iterable[str]] = "",
+    capture_args: bool = True,
+    capture_arg_values: bool = False,
+) -> None:
     """Install ROCTX instrumentation for each backend in backends.
 
-    Empty input is a no-op.
+    ``capture_args`` and ``capture_arg_values`` configure operator-argument
+    capture. Empty backends is a no-op.
     """
     from .registry import install_many
 
@@ -237,4 +238,5 @@ def install_global_wraps(backends: Union[str, Iterable[str]] = "") -> None:
 
     if not names:
         return
+    set_args_capture(capture_args, capture_arg_values)
     install_many(names)

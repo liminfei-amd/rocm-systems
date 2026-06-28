@@ -77,11 +77,8 @@ def _find_python_script_index(argv: list[str]) -> tuple[Optional[int], Optional[
 
 
 def _capture_args_flags(capture_args_level: str) -> list[str]:
-    """Map a ``--ml-trace-with-params`` level to launcher flags.
-
-    The launcher translates these into the
-    ``ROCPROFCOMPUTE_ROCTX_CAPTURE_ARGS`` and
-    ``ROCPROFCOMPUTE_ROCTX_CAPTURE_ARG_VALUES`` environment variables.
+    """Map a ``--ml-trace-with-params`` level to the launcher
+    ``--capture-args`` / ``--capture-arg-values`` flags.
     """
     capture_args = "0" if capture_args_level == "off" else "1"
     capture_arg_values = "1" if capture_args_level == "values" else "0"

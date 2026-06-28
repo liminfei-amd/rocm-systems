@@ -301,7 +301,10 @@ def _initialize_c_tier() -> bool:
 
     if _STATE.roctx_recordfn is not None:
         try:
-            _STATE.roctx_recordfn.install()
+            _STATE.roctx_recordfn.install(
+                core.args_capture_enabled(),
+                core.args_values_enabled(),
+            )
             console_log(
                 "ml api trace",
                 (
