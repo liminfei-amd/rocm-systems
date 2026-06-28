@@ -633,3 +633,40 @@ def test_process_ml_api_trace_output_preserves_per_row_backend(tmp_path):
     )
     assert backend_by_operator.get("torch.mm") == "triton"
     assert backend_by_operator.get("nn.Module.Linear.forward") == "torch"
+
+
+def test_process_ml_api_trace_output_defaults_args_to_empty(tmp_path):
+    """A marker CSV without an Args column yields an empty Args column."""
+    workload_dir = str(tmp_path)
+    write_rocpd_layout(workload_dir)
+
+    consolidated_df, _ = process_ml_api_trace_output(workload_dir)
+
+    assert "Args" in consolidated_df.columns
+    assert (consolidated_df["Args"] == "").all()
+
+
+def test_process_ml_api_trace_output_preserves_per_row_args(tmp_path):
+    """A tagged CSV (as produced by _augment_marker_csv) surfaces the per-row
+    Args value into the consolidated dataframe.
+    """
+    workload_dir = str(tmp_path)
+    write_rocpd_layout(workload_dir)
+
+    marker_path = Path(workload_dir) / "ml_api_trace_run0_marker_api_trace.csv"
+    df = pd.read_csv(marker_path)
+    df["Args"] = [
+        "(input=float32[2x2])",
+        "(input=float32[2x2])",
+        "(self=float32[2x2])",
+    ]
+    df.to_csv(marker_path, index=False)
+
+    consolidated_df, _ = process_ml_api_trace_output(workload_dir)
+
+    assert "Args" in consolidated_df.columns
+    args_by_operator = dict(
+        zip(consolidated_df["Operator_Name"], consolidated_df["Args"])
+    )
+    assert args_by_operator.get("torch.mm") == "(self=float32[2x2])"
+    assert args_by_operator.get("nn.Module.Linear.forward") == "(input=float32[2x2])"

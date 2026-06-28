@@ -127,6 +127,18 @@ constexpr std::size_t kMaxArgsLen = 512;
 // Maximum number of operator inputs rendered into an args blob.
 constexpr std::size_t kMaxArgItems = 32;
 
+// Truncate an args blob to kMaxArgsLen characters, appending an ellipsis when
+// the blob is shortened.
+std::string cap_args_blob(std::string blob)
+{
+    if (blob.size() > kMaxArgsLen)
+    {
+        blob.resize(kMaxArgsLen);
+        blob += "...";
+    }
+    return blob;
+}
+
 // Whether operator args are captured (default on).
 bool args_capture_enabled()
 {
@@ -171,8 +183,8 @@ std::string encode_args(const std::string& args)
     return out;
 }
 
-// Map a tensor scalar type to the dtype spelling used by the Python tiers
-// (e.g. Float -> float32) so the args format is consistent across tiers.
+// Map a tensor scalar type to its dtype spelling (e.g. Float -> float32),
+// matching the spelling used by the Python tiers.
 std::string scalar_type_name(c10::ScalarType type)
 {
     switch (type)
@@ -327,12 +339,7 @@ std::string build_leaf_args(const at::RecordFunction& fn)
     {
         return "";
     }
-    if (out.size() > kMaxArgsLen)
-    {
-        out.resize(kMaxArgsLen);
-        out += "...";
-    }
-    return out;
+    return cap_args_blob(std::move(out));
 }
 
 // Append "|args=<encoded>" to full when args is non-empty.

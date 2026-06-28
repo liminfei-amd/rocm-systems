@@ -85,7 +85,7 @@ _thread_local = threading.local()
 rangePush: Optional[Callable[[str], None]] = None
 rangePop: Optional[Callable[[], None]] = None
 
-# Wire the Python tier via core and reuse its roctx handles below.
+# Wire the Python tier via core and reuse its roctx handles.
 _ROCTX_AVAILABLE = core.ensure_python_tier()
 if _ROCTX_AVAILABLE:
     rangePush, rangePop = core.get_python_tier_io()

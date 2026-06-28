@@ -617,7 +617,8 @@ def test_sanitize_pc_sampling_interval(
     ],
 )
 def test_capture_args_flags_mapping(level, expected):
-    """Each capture level maps to the launcher's env-setting flags."""
+    """Each capture level maps to the launcher's --capture-args /
+    --capture-arg-values flags."""
     assert _capture_args_flags(level) == expected
 
 

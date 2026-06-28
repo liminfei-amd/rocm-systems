@@ -870,7 +870,6 @@ def save_ml_api_trace_inputs(
             Path(workload_dir) / f"ml_api_trace_{fbase}_counter_collection.csv"
         )
         dst_marker = Path(workload_dir) / f"ml_api_trace_{fbase}_marker_api_trace.csv"
-        # These files are expected to exist.
         shutil.copyfile(src_counter, dst_counter)
         _augment_marker_csv(str(src_marker), str(dst_marker))
         console_log(
@@ -885,7 +884,6 @@ def save_ml_api_trace_inputs(
         counter_files = list(src_dir.glob("*/*_counter_collection.csv"))
         marker_files = list(src_dir.glob("*/*_marker_api_trace.csv"))
         (Path(workload_dir) / f"{fbase}").mkdir(parents=True, exist_ok=True)
-        # These files are expected to exist.
         # Output path: workload_dir/fbase/ml_api_trace_<src_basename>, discovered
         # by process_ml_api_trace_output.
         for src_counter in counter_files:

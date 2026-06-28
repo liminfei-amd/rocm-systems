@@ -602,12 +602,11 @@ Examples:
         feature_label="ML API trace",
         help=(
             "\t\t\tControl operator argument capture for ML API tracing.\n"
-            "\t\t\tOnly takes effect alongside a tracing flag (--torch-trace,\n"
-            "\t\t\t--triton-trace, or --ml-api-trace); otherwise it is ignored\n"
-            "\t\t\twith a warning. One of:\n"
+            "\t\t\tRequires a tracing flag (--torch-trace, --triton-trace,\n"
+            "\t\t\tor --ml-api-trace). One of:\n"
             "\t\t\t   off    (do not capture operator args)\n"
             "\t\t\t   shapes (capture input shapes and dtypes; DEFAULT)\n"
-            "\t\t\t   values (additionally capture scalar argument values)"
+            "\t\t\t   values (also capture scalar argument values)"
         ),
     )
     profile_group.add_argument(

@@ -43,12 +43,6 @@ def _report_recordfn_callback_errors() -> None:
     )
 
 
-# Consume leading "--frameworks/--capture-args/--capture-arg-values <value>"
-# options and an optional "--" separator.
-args = sys.argv[1:]
-frameworks = ""
-capture_args = True
-capture_arg_values = False
 _LAUNCHER_OPTIONS = ("--frameworks", "--capture-args", "--capture-arg-values")
 
 
@@ -56,40 +50,61 @@ def _flag(value: str) -> bool:
     return value.strip().lower() in ("1", "true", "yes", "on")
 
 
-while args and args[0] in _LAUNCHER_OPTIONS:
-    option = args[0]
-    value = args[1] if len(args) > 1 else ""
-    if option == "--frameworks":
-        frameworks = value
-    elif option == "--capture-args":
-        capture_args = _flag(value)
-    else:
-        capture_arg_values = _flag(value)
-    args = args[2:]
-if args and args[0] == "--":
-    args = args[1:]
+def parse_launcher_options(
+    argv: list[str],
+) -> tuple[str, bool, bool, list[str]]:
+    """Parse leading launcher options and the ``--`` separator.
 
-if not args:
-    print(
-        "usage: python <path>/launch.py [--frameworks <names>] "
-        "[--capture-args <0|1>] [--capture-arg-values <0|1>] -- "
-        "<target.py> [args...]",
-        file=sys.stderr,
+    Returns ``(frameworks, capture_args, capture_arg_values, remaining)`` where
+    ``remaining`` is the workload command following ``--``.
+    """
+    args = list(argv)
+    frameworks = ""
+    capture_args = True
+    capture_arg_values = False
+    while args and args[0] in _LAUNCHER_OPTIONS:
+        option = args[0]
+        value = args[1] if len(args) > 1 else ""
+        if option == "--frameworks":
+            frameworks = value
+        elif option == "--capture-args":
+            capture_args = _flag(value)
+        else:
+            capture_arg_values = _flag(value)
+        args = args[2:]
+    if args and args[0] == "--":
+        args = args[1:]
+    return frameworks, capture_args, capture_arg_values, args
+
+
+def main(argv: list[str]) -> None:
+    frameworks, capture_args, capture_arg_values, args = parse_launcher_options(argv)
+
+    if not args:
+        print(
+            "usage: python <path>/launch.py [--frameworks <names>] "
+            "[--capture-args <0|1>] [--capture-arg-values <0|1>] -- "
+            "<target.py> [args...]",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    target_script = args[0]
+    script_args = args[1:]
+
+    install_global_wraps(
+        frameworks,
+        capture_args=capture_args,
+        capture_arg_values=capture_arg_values,
     )
-    sys.exit(2)
 
-target_script = args[0]
-script_args = args[1:]
+    sys.argv = [target_script] + script_args
+    # Execute the workload as the top-level program (__name__ == "__main__").
+    try:
+        runpy.run_path(target_script, run_name="__main__")
+    finally:
+        _report_recordfn_callback_errors()
 
-install_global_wraps(
-    frameworks,
-    capture_args=capture_args,
-    capture_arg_values=capture_arg_values,
-)
 
-sys.argv = [target_script] + script_args
-# Execute the workload as the top-level program (__name__ == "__main__").
-try:
-    runpy.run_path(target_script, run_name="__main__")
-finally:
-    _report_recordfn_callback_errors()
+if __name__ == "__main__":
+    main(sys.argv[1:])

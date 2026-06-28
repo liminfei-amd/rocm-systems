@@ -227,6 +227,58 @@ TEST(ArgsEncoding, AppendArgsSegmentPlacesEncodedBlobBeforeBackend)
     EXPECT_EQ(empty_args, "op:#1@x:1");
 }
 
+TEST(ArgsRendering, TensorRendersDtypeAndShape)
+{
+    const auto t = at::zeros({2, 3}, at::TensorOptions().dtype(at::kLong));
+    EXPECT_EQ(render_leaf_ivalue(c10::IValue(t), /*values=*/false), "int64[2x3]");
+
+    const auto scalar = at::zeros({}, at::TensorOptions().dtype(at::kFloat));
+    EXPECT_EQ(render_leaf_ivalue(c10::IValue(scalar), /*values=*/false), "float32[]");
+}
+
+TEST(ArgsRendering, UndefinedTensorRendersNone)
+{
+    EXPECT_EQ(render_leaf_ivalue(c10::IValue(at::Tensor()), /*values=*/false), "None");
+}
+
+TEST(ArgsRendering, TensorListRendersBracketed)
+{
+    std::vector<at::Tensor> tensors = {
+        at::zeros({2}, at::TensorOptions().dtype(at::kFloat)),
+        at::zeros({3, 4}, at::TensorOptions().dtype(at::kInt)),
+    };
+    EXPECT_EQ(render_leaf_ivalue(c10::IValue(tensors), /*values=*/false), "[float32[2], int32[3x4]]");
+}
+
+TEST(ArgsRendering, ScalarValueModeRendersValueOtherwiseTypeTag)
+{
+    // With value capture, scalars render their literal value.
+    EXPECT_EQ(render_leaf_ivalue(c10::IValue(static_cast<int64_t>(7)), /*values=*/true), "7");
+    EXPECT_EQ(render_leaf_ivalue(c10::IValue(true), /*values=*/true), "True");
+    EXPECT_EQ(render_leaf_ivalue(c10::IValue(false), /*values=*/true), "False");
+    EXPECT_EQ(render_leaf_ivalue(c10::IValue(2.5), /*values=*/true), std::to_string(2.5));
+
+    // Without value capture, scalars render only their type tag.
+    EXPECT_EQ(render_leaf_ivalue(c10::IValue(static_cast<int64_t>(7)), /*values=*/false),
+              c10::IValue(static_cast<int64_t>(7)).tagKind());
+    EXPECT_EQ(render_leaf_ivalue(c10::IValue(2.5), /*values=*/false), c10::IValue(2.5).tagKind());
+}
+
+TEST(ArgsRendering, CapArgsBlobTruncatesPastLimit)
+{
+    const std::string under(kMaxArgsLen, 'a');
+    EXPECT_EQ(cap_args_blob(under), under);
+
+    const std::string at_limit(kMaxArgsLen, 'a');
+    EXPECT_EQ(cap_args_blob(at_limit), at_limit);
+
+    const std::string over(kMaxArgsLen + 10, 'a');
+    const std::string capped = cap_args_blob(over);
+    EXPECT_EQ(capped.size(), kMaxArgsLen + 3);
+    EXPECT_EQ(capped.compare(kMaxArgsLen, 3, "..."), 0);
+    EXPECT_EQ(capped.substr(0, kMaxArgsLen), std::string(kMaxArgsLen, 'a'));
+}
+
 TEST_F(RoctxRecordFnTest, PushUserScopeEmitsArgsSegmentBeforeBackend)
 {
     start_capture();
@@ -236,6 +288,24 @@ TEST_F(RoctxRecordFnTest, PushUserScopeEmitsArgsSegmentBeforeBackend)
 
     ASSERT_EQ(captured.size(), 1u);
     EXPECT_EQ(captured[0], "op:#1@x:1|args=(f32[2x2])|torch");
+}
+
+TEST_F(RoctxRecordFnTest, InstallConfiguresArgsCaptureFlags)
+{
+    install(/*capture_args=*/false, /*capture_values=*/false);
+    EXPECT_FALSE(args_capture_enabled());
+    EXPECT_FALSE(args_values_enabled());
+    uninstall();
+
+    install(/*capture_args=*/true, /*capture_values=*/true);
+    EXPECT_TRUE(args_capture_enabled());
+    EXPECT_TRUE(args_values_enabled());
+    uninstall();
+
+    // Values require args capture to also be enabled.
+    install(/*capture_args=*/false, /*capture_values=*/true);
+    EXPECT_FALSE(args_capture_enabled());
+    EXPECT_FALSE(args_values_enabled());
 }
 
 TEST_F(RoctxRecordFnTest, SaveThenConsumeReturnsSavedStack)
@@ -571,6 +641,30 @@ TEST_F(RoctxRecordFnRealOpsTest, CaptureLeafLabelsAndUserScope)
     ASSERT_GT(bwd_total, 0u);
     EXPECT_GT(bwd_under_scope, 0u);
     EXPECT_GT(g_n_userscope_inherits.load(), 0u);
+}
+
+TEST_F(RoctxRecordFnRealOpsTest, CaptureDisabledEmitsNoArgsSegment)
+{
+    install(/*capture_args=*/false, /*capture_values=*/false);
+    start_capture();
+
+    auto x = at::randn({8, 8}, at::TensorOptions().device(at::kCUDA));
+    (void)(x.matmul(x)).sum();
+
+    const auto captured = stop_capture();
+    ASSERT_FALSE(captured.empty());
+
+    bool saw_torch_op = false;
+    for (const auto& m : captured)
+    {
+        if (m.find("|torch") != std::string::npos)
+        {
+            saw_torch_op = true;
+        }
+        EXPECT_EQ(m.find("|args="), std::string::npos) << m;
+    }
+    EXPECT_TRUE(saw_torch_op);
+    EXPECT_EQ(g_n_callback_errors.load(), 0u);
 }
 
 TEST_F(RoctxRecordFnRealOpsTest, ManyStepsCorrelation)
