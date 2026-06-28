@@ -647,8 +647,8 @@ def test_process_ml_api_trace_output_defaults_args_to_empty(tmp_path):
 
 
 def test_process_ml_api_trace_output_preserves_per_row_args(tmp_path):
-    """A tagged CSV (as produced by _augment_marker_csv) surfaces the per-row
-    Args value into the consolidated dataframe.
+    """A tagged marker CSV surfaces its per-row Args value into the
+    consolidated dataframe.
     """
     workload_dir = str(tmp_path)
     write_rocpd_layout(workload_dir)
