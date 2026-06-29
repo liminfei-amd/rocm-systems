@@ -753,8 +753,14 @@ warning:
 * ``--ml-trace-with-params off`` — do not capture operator args.
 * ``--ml-trace-with-params shapes`` — capture input shapes and dtypes
   (default).
-* ``--ml-trace-with-params values`` — capture scalar argument *values* in
-  addition to shapes and dtypes.
+* ``--ml-trace-with-params values`` — also record the values of scalar
+  arguments (numbers, booleans, and truncated strings). Tensor contents are
+  not recorded.
+
+For example, the same Triton kernel launch under each capture level::
+
+    shapes:  (in_ptr0=float32[4096x4096], in_ptr1=float32[4096x4096], out_ptr0=float32[4096x4096], xnumel=int, XBLOCK=int)
+    values:  (in_ptr0=float32[4096x4096], in_ptr1=float32[4096x4096], out_ptr0=float32[4096x4096], xnumel=16777216, XBLOCK=2048)
 
 The flat **Operator summary** table below the call tree has one row per
 operator that ran at least one GPU kernel. Time cells auto-switch between

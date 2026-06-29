@@ -606,7 +606,8 @@ Examples:
             "\t\t\tor --ml-api-trace). One of:\n"
             "\t\t\t   off    (do not capture operator args)\n"
             "\t\t\t   shapes (capture input shapes and dtypes; DEFAULT)\n"
-            "\t\t\t   values (also capture scalar argument values)"
+            "\t\t\t   values (also record scalar argument values; tensor\n"
+            "\t\t\t           contents are not recorded)"
         ),
     )
     profile_group.add_argument(
