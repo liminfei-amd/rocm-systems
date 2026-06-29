@@ -13,9 +13,11 @@
 #include "test-options.h"
 
 #include <array>
+#include <cerrno>
 #include <cstdlib>
 #include <gtest/gtest.h>
 #include <hip/hip_runtime_api.h>
+#include <optional>
 #include <string>
 #include <thread>
 #include <unistd.h>
@@ -28,11 +30,21 @@ namespace {
 
 // Gate fastpath-only tests on AIS capability.
 void
-enforceFastpathGate()
+enforceFastpathGate(hipFileHandle_t handle, void *device_buffer)
 {
     hipFile::test::AisCapability ais_capability{test_env.allow_skip_fastpath};
 
-    const auto decision = ais_capability.populate();
+    std::optional<hipFile::test::AisCapability::ProbeResult> probe;
+#if HIP_VERSION_MAJOR > 7 || (HIP_VERSION_MAJOR == 7 && HIP_VERSION_MINOR >= 14)
+    errno       = 0;
+    ssize_t ret = hipFileRead(handle, device_buffer, /*size=*/0, /*file_offset=*/0, /*buffer_offset=*/0);
+    probe       = hipFile::test::AisCapability::ProbeResult{ret, errno};
+#else
+    static_cast<void>(handle);
+    static_cast<void>(device_buffer);
+#endif
+
+    const auto decision = ais_capability.populate(probe);
 
     if (decision == hipFile::test::AisCapability::GateDecision::Run) {
         return;
@@ -87,7 +99,6 @@ struct HipFileIo : public testing::TestWithParam<IoTestParam> {
         // Enable the desired backend
         switch (GetParam().backend) {
             case IoTestBackend::Fastpath:
-                enforceFastpathGate();
                 Context<Configuration>::get()->fastpath(true);
                 break;
 
@@ -108,6 +119,10 @@ struct HipFileIo : public testing::TestWithParam<IoTestParam> {
         ASSERT_EQ(HIPFILE_SUCCESS, hipFileHandleRegister(&tmpfile_handle, &descr));
 
         ASSERT_EQ(hipSuccess, hipMalloc(&unregistered_device_buffer, unregistered_device_buffer_size));
+
+        if (GetParam().backend == IoTestBackend::Fastpath) {
+            enforceFastpathGate(tmpfile_handle, unregistered_device_buffer);
+        }
     }
 
     void TearDown() override
@@ -170,7 +185,7 @@ struct HipFileIoHipInit : public testing::Test {
         ASSERT_EQ(HIPFILE_SUCCESS,
                   hipFileBufRegister(registered_device_buffer, registered_device_buffer_size, 0));
 
-        enforceFastpathGate();
+        enforceFastpathGate(tmpfile_handle, registered_device_buffer);
     }
 
     void TearDown() override

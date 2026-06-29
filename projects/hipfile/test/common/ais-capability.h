@@ -5,7 +5,9 @@
 
 #pragma once
 
+#include <optional>
 #include <string>
+#include <sys/types.h>
 
 namespace hipFile::test {
 
@@ -26,26 +28,51 @@ public:
         Fail,
     };
 
-    GateDecision populate();
+    // Raw result of a zero-sized fast-path read performed by the caller.
+    struct ProbeResult {
+        ssize_t ret;
+        int     err;
+    };
+
+    // Keep the zero-sized I/O optional for when ROCm < 7.14 detected.
+    GateDecision populate(std::optional<ProbeResult> probe = std::nullopt);
 
     std::string report() const;
     std::string skipHint() const;
 
 private:
+    enum class IoProbeResult {
+        NotRun,
+        Ok,            // zero-sized read returned 0
+        NoDevice,      // -1/ENODEV: kernel/amdgpu/p2pdma not ready
+        FsUnsupported, // -hipFileInternalError: filesystem not a valid fastpath target
+        OtherError,    // any other result
+    };
+
     void detectKernelAis();
     void detectHipRuntime();
     void detectAmdgpu();
 
+    static IoProbeResult classifyIoProbe(ssize_t ret, int err);
+    static const char   *ioProbeReason(IoProbeResult result);
+
     bool fastpathAvailable() const
     {
-        return kernel_ais && hip_runtime && amdgpu;
+        const bool static_ok = kernel_ais && hip_runtime && amdgpu;
+        if (io_probe == IoProbeResult::NotRun) {
+            return static_ok;
+        }
+        return static_ok && io_probe == IoProbeResult::Ok;
     }
 
     bool allow_skip = false;
 
-    bool kernel_ais  = false; // AIS-init bit set on all GPU nodes in KFD topology
-    bool hip_runtime = false; // hipAmdFileRead + hipAmdFileWrite resolvable
-    bool amdgpu      = false; // kfd_ais_rw_file present in /proc/kallsyms
+    bool          kernel_ais     = false; // AIS-init bit set on all GPU nodes in KFD topology
+    bool          hip_runtime    = false; // hipAmdFileRead + hipAmdFileWrite resolvable
+    bool          amdgpu         = false; // kfd_ais_rw_file present in /proc/kallsyms
+    IoProbeResult io_probe       = IoProbeResult::NotRun;
+    ssize_t       io_probe_ret   = 0;
+    int           io_probe_errno = 0;
 };
 
 }

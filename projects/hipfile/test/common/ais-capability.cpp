@@ -6,7 +6,9 @@
 #include "ais-capability.h"
 
 #include "hip.h"
+#include "hipfile.h"
 
+#include <cerrno>
 #include <cstdint>
 #include <fstream>
 #include <iostream>
@@ -89,12 +91,52 @@ AisCapability::detectAmdgpu()
     amdgpu = false;
 }
 
+AisCapability::IoProbeResult
+AisCapability::classifyIoProbe(ssize_t ret, int err)
+{
+    if (ret == 0) {
+        return IoProbeResult::Ok;
+    }
+    if (ret == -1 && err == ENODEV) {
+        return IoProbeResult::NoDevice;
+    }
+    if (ret == -static_cast<ssize_t>(hipFileInternalError)) {
+        return IoProbeResult::FsUnsupported;
+    }
+    return IoProbeResult::OtherError;
+}
+
+const char *
+AisCapability::ioProbeReason(IoProbeResult result)
+{
+    switch (result) {
+        case IoProbeResult::NotRun:
+            return "not run (zero-sized I/O probe unavailable)";
+        case IoProbeResult::Ok:
+            return "ok";
+        case IoProbeResult::NoDevice:
+            return "no device / p2pdma not ready";
+        case IoProbeResult::FsUnsupported:
+            return "filesystem not supported";
+        case IoProbeResult::OtherError:
+            return "unexpected error (zero-sized I/O may be unsupported)";
+        default:
+            return "unknown";
+    }
+}
+
 AisCapability::GateDecision
-AisCapability::populate()
+AisCapability::populate(std::optional<ProbeResult> probe)
 {
     detectKernelAis();
     detectHipRuntime();
     detectAmdgpu();
+
+    if (probe.has_value()) {
+        io_probe_ret   = probe->ret;
+        io_probe_errno = probe->err;
+        io_probe       = classifyIoProbe(probe->ret, probe->err);
+    }
 
     std::cerr << "AIS kernel AIS-init support: " << (kernel_ais ? "yes" : "no") << "\n";
     std::cerr << "AIS HIP runtime support:     " << (hip_runtime ? "yes" : "no") << "\n";
@@ -115,7 +157,15 @@ AisCapability::report() const
     os << "Fastpath Validation:\n";
     os << "  HIP Runtime Check:  " << pass_fail(hip_runtime) << "\n";
     os << "  amdgpu Check:       " << pass_fail(amdgpu) << "\n";
-    os << "  AIS init check:     " << pass_fail(kernel_ais);
+    os << "  AIS init check:     " << pass_fail(kernel_ais) << "\n";
+
+    const char *io_status =
+        io_probe == IoProbeResult::Ok ? "Pass" : (io_probe == IoProbeResult::NotRun ? "Skipped" : "Fail");
+    os << "  Test I/O check:     " << io_status << " (" << ioProbeReason(io_probe);
+    if (io_probe != IoProbeResult::Ok && io_probe != IoProbeResult::NotRun) {
+        os << "; ret=" << io_probe_ret << ", errno=" << io_probe_errno;
+    }
+    os << ")";
 
     return os.str();
 }
