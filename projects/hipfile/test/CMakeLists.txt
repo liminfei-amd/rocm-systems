@@ -64,9 +64,14 @@ ais_add_test_executable(
 )
 target_link_libraries(hipfile_system_tests PRIVATE GTest::gtest)
 
+set(_allow_skip_arg "")
+if(HIPFILE_ALLOW_SKIP_FASTPATH_TESTS)
+    set(_allow_skip_arg --allow-skip-fastpath)
+endif()
+
 ais_gtest_discover_tests(
     hipfile_system_tests
-    EXTRA_ARGS --ais-capable-dir ${AIS_CAPABLE_DIR}
+    EXTRA_ARGS --ais-capable-dir ${AIS_CAPABLE_DIR} ${_allow_skip_arg}
     PROPERTIES "LABELS;system;LABELS;hipfile;SKIP_REGULAR_EXPRESSION;fastpath not available"
     TEST_LIST hipfile_system_tests
 )

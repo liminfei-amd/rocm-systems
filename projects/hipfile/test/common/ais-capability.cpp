@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <fstream>
 #include <iostream>
+#include <sstream>
 #include <string>
 
 namespace hipFile::test {
@@ -88,8 +89,7 @@ AisCapability::detectAmdgpu()
     amdgpu = false;
 }
 
-// Reimplements logic from hipfile/tools/ais-check/ais-check.
-void
+AisCapability::GateDecision
 AisCapability::populate()
 {
     detectKernelAis();
@@ -99,6 +99,33 @@ AisCapability::populate()
     std::cerr << "AIS kernel AIS-init support: " << (kernel_ais ? "yes" : "no") << "\n";
     std::cerr << "AIS HIP runtime support:     " << (hip_runtime ? "yes" : "no") << "\n";
     std::cerr << "AIS amdgpu support:          " << (amdgpu ? "yes" : "no") << "\n";
+
+    if (fastpathAvailable()) {
+        return GateDecision::Run;
+    }
+    return allow_skip ? GateDecision::Skip : GateDecision::Fail;
+}
+
+std::string
+AisCapability::report() const
+{
+    auto pass_fail = [](bool ok) { return ok ? "Pass" : "Fail"; };
+
+    std::ostringstream os;
+    os << "Fastpath Validation:\n";
+    os << "  HIP Runtime Check:  " << pass_fail(hip_runtime) << "\n";
+    os << "  amdgpu Check:       " << pass_fail(amdgpu) << "\n";
+    os << "  AIS init check:     " << pass_fail(kernel_ais);
+
+    return os.str();
+}
+
+std::string
+AisCapability::skipHint() const
+{
+    return "To skip these tests instead of failing, configure the build with "
+           "-DHIPFILE_ALLOW_SKIP_FASTPATH_TESTS=ON "
+           "(passes --allow-skip-fastpath to the system test binary).";
 }
 
 }
