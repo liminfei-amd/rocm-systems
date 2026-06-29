@@ -139,7 +139,7 @@ def _format_triton_arg(obj: object) -> str:
     if isinstance(obj, (list, tuple)):
         return "[" + ", ".join(_format_triton_arg(o) for o in obj[:8]) + "]"
     if core.args_values_enabled():
-        if isinstance(obj, bool) or isinstance(obj, (int, float)):
+        if isinstance(obj, (int, float)):
             return repr(obj)
         if isinstance(obj, str):
             return repr(obj[:32])

@@ -743,7 +743,7 @@ Leaf operators (ATen ops and Triton kernel launches) additionally record an
 ``Args`` column in ``ml_api_trace/consolidated.csv`` describing the operator's
 inputs as ``(name=dtype[shape], ...)``, where each input is labelled with its
 parameter name (for example ``(self=float32[4096x4096], other=float32[4096x4096])``
-or ``(in_ptr0=float32[8], xnumel=1024)``). Capture is on by default.
+or ``(in_ptr0=float32[8], xnumel=int)``). Capture is on by default.
 
 The capture level is controlled by the ``--ml-trace-with-params`` profile flag,
 which only takes effect alongside a tracing flag (``--torch-trace``,

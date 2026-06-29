@@ -24,6 +24,8 @@ Full documentation for ROCm Compute Profiler is available at [https://rocm.docs.
 
 * Added experimental Triton support to ML API tracing. Profile with `--experimental --triton-trace` to emit a ROCTX marker per Triton/Inductor kernel launch attributed to the user call site, and analyze with `--experimental --list-triton-operators` or `--experimental --triton-operator <pattern>` to list or filter Triton operators independently of Torch.
 
+* Added ``--ml-trace-with-params {off,shapes,values}`` to capture operator arguments during ML API tracing (Torch and Triton). When set to ``shapes`` or ``values``, the captured arguments are written to a new ``Args`` column in ``ml_api_trace/consolidated.csv``.
+
 ### Changed
 
 * `--pc-sampling-sorting-type` now defaults to `count` (was `offset`), so the PC sampling table shows the most-sampled instructions first.

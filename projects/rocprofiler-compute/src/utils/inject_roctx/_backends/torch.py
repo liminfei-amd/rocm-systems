@@ -663,7 +663,7 @@ def _format_dispatch_arg(obj: object) -> str:
         inner = ", ".join(_format_dispatch_arg(o) for o in obj[:8])
         return f"[{inner}]"
     if core.args_values_enabled():
-        if isinstance(obj, bool) or isinstance(obj, (int, float)):
+        if isinstance(obj, (int, float)):
             return repr(obj)
         if isinstance(obj, str):
             return repr(obj[:32])
@@ -696,12 +696,15 @@ def _build_dispatch_args(
     try:
         names = _schema_arg_names(func)
         parts: list[str] = []
+        # Cap the combined positional and keyword count at MAX_ARG_ITEMS.
         for i, value in enumerate(call_args[: marker_format.MAX_ARG_ITEMS]):
             label = names[i] if names and i < len(names) and names[i] else None
             rendered = _format_dispatch_arg(value)
             parts.append(f"{label}={rendered}" if label else rendered)
-        for key, value in list(call_kwargs.items())[: marker_format.MAX_ARG_ITEMS]:
-            parts.append(f"{key}={_format_dispatch_arg(value)}")
+        remaining = marker_format.MAX_ARG_ITEMS - len(parts)
+        if remaining > 0:
+            for key, value in list(call_kwargs.items())[:remaining]:
+                parts.append(f"{key}={_format_dispatch_arg(value)}")
         return marker_format.cap_args("(" + ", ".join(parts) + ")")
     except Exception:
         return ""

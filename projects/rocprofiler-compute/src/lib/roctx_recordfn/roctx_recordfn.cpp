@@ -735,6 +735,8 @@ std::int64_t install(bool capture_args = true, bool capture_values = false)
     const auto existing = g_handle.load();
     if (existing != at::INVALID_CALLBACK_HANDLE)
     {
+        // needsInputs is fixed when the callback is registered and cannot be
+        // changed in place; call uninstall() before install() to change it.
         return static_cast<std::int64_t>(existing);
     }
     auto callback = at::RecordFunctionCallback(start_cb, end_cb)
